@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   BarChart3,
   Boxes,
   ChevronDown,
+  Database,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -35,6 +36,89 @@ const money = (value) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(Number(value || 0));
 
 const today = () => new Date().toISOString().slice(0, 10);
+const currentMonthPrefix = () => today().slice(0, 7);
+const monthStart = () => `${currentMonthPrefix()}-01`;
+
+const DEFAULT_STOCK = { id: "main", name: "Main Stock", backend: true };
+const LOCAL_CATEGORIES = [
+  { id: 1, name: "General" },
+  { id: 2, name: "Electronics" },
+  { id: 3, name: "Accessories" },
+  { id: 4, name: "Grocery" }
+];
+
+const blankStockData = () => ({
+  products: [],
+  sales: [],
+  expenses: [],
+  saleCounter: 1,
+  categories: LOCAL_CATEGORIES
+});
+
+function storedJson(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "null") ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const stockDataKey = (stockId) => `stockwiseData:${stockId}`;
+
+function initialStockBooks() {
+  const customStocks = storedJson("stockwiseStocks", []);
+  return [DEFAULT_STOCK, ...customStocks.filter((stock) => stock?.id && stock?.name)];
+}
+
+function downloadText(filename, text, type = "text/plain") {
+  const blob = new Blob([text], { type });
+  saveBlob({ data: blob }, filename);
+}
+
+function csvValue(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function csv(rows) {
+  return rows.map((row) => row.map(csvValue).join(",")).join("\n");
+}
+
+function localProfitLoss(data, start, end) {
+  const inRange = (date) => {
+    const value = String(date || "").slice(0, 10);
+    return (!start || value >= start) && (!end || value <= end);
+  };
+  const sales = data.sales.filter((sale) => inRange(sale.createdAt));
+  const expenses = data.expenses.filter((expense) => inRange(expense.expenseDate));
+  const revenue = sales.reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0);
+  const cogs = sales.reduce(
+    (sum, sale) => sum + (sale.saleItems || []).reduce((itemSum, item) => itemSum + Number(item.costPrice || 0) * Number(item.quantity || 0), 0),
+    0
+  );
+  const expenseTotal = expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  return {
+    revenue,
+    cogs,
+    expenses: expenseTotal,
+    grossProfit: revenue - cogs,
+    netProfit: revenue - cogs - expenseTotal,
+    salesCount: sales.length
+  };
+}
+
+function localDashboard(data) {
+  const todaySummary = localProfitLoss(data, today(), today());
+  const monthSummary = localProfitLoss(data, monthStart(), today());
+  const lowStockProducts = data.products.filter((product) => Number(product.stockQuantity || 0) <= Number(product.minimumStock || 0));
+  return {
+    today: todaySummary,
+    month: monthSummary,
+    activeProducts: data.products.length,
+    lowStockCount: lowStockProducts.length,
+    lowStockProducts,
+    recentSales: data.sales.slice(-6).reverse()
+  };
+}
 
 function saveBlob(response, filename) {
   const url = URL.createObjectURL(response.data);
@@ -60,11 +144,93 @@ function PrivateRoute({ children, adminOnly = false }) {
   return children;
 }
 
+const StockContext = createContext(null);
+
+function StockProvider({ children }) {
+  const [stockBooks, setStockBooks] = useState(initialStockBooks);
+  const [currentStockId, setCurrentStockId] = useState(() => localStorage.getItem("stockwiseCurrentStock") || "main");
+  const [localData, setLocalDataState] = useState(() => storedJson(stockDataKey(localStorage.getItem("stockwiseCurrentStock") || "main"), blankStockData()));
+
+  const currentStock = stockBooks.find((stock) => stock.id === currentStockId) || stockBooks[0] || DEFAULT_STOCK;
+  const isBackendStock = Boolean(currentStock.backend);
+
+  const persistStocks = (nextStocks = stockBooks, nextCurrent = currentStockId) => {
+    localStorage.setItem("stockwiseStocks", JSON.stringify(nextStocks.filter((stock) => !stock.backend)));
+    localStorage.setItem("stockwiseCurrentStock", nextCurrent);
+  };
+
+  const readLocalData = (stockId = currentStockId) => storedJson(stockDataKey(stockId), blankStockData());
+
+  const writeLocalData = (nextData, stockId = currentStockId) => {
+    localStorage.setItem(stockDataKey(stockId), JSON.stringify(nextData));
+    if (stockId === currentStockId) setLocalDataState(nextData);
+  };
+
+  const updateLocalData = (updater) => {
+    const nextData = typeof updater === "function" ? updater(readLocalData()) : updater;
+    writeLocalData(nextData);
+    return nextData;
+  };
+
+  const selectStock = (stockId) => {
+    if (!stockBooks.some((stock) => stock.id === stockId)) return;
+    setCurrentStockId(stockId);
+    localStorage.setItem("stockwiseCurrentStock", stockId);
+    setLocalDataState(storedJson(stockDataKey(stockId), blankStockData()));
+  };
+
+  const createStock = (name) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    const id = `stock-${Date.now()}`;
+    const nextStocks = [...stockBooks, { id, name: trimmedName, backend: false }];
+    setStockBooks(nextStocks);
+    setCurrentStockId(id);
+    writeLocalData(blankStockData(), id);
+    persistStocks(nextStocks, id);
+    toast.success("Stock workspace created");
+  };
+
+  const deleteStock = (stockId) => {
+    if (stockId === "main") return;
+    const nextStocks = stockBooks.filter((stock) => stock.id !== stockId);
+    setStockBooks(nextStocks);
+    localStorage.removeItem(stockDataKey(stockId));
+    const nextCurrent = currentStockId === stockId ? "main" : currentStockId;
+    setCurrentStockId(nextCurrent);
+    setLocalDataState(readLocalData(nextCurrent));
+    persistStocks(nextStocks, nextCurrent);
+    toast.success("Stock workspace deleted");
+  };
+
+  const value = {
+    stockBooks,
+    currentStock,
+    currentStockId,
+    isBackendStock,
+    localData,
+    selectStock,
+    createStock,
+    deleteStock,
+    updateLocalData
+  };
+
+  return <StockContext.Provider value={value}>{children}</StockContext.Provider>;
+}
+
+function useStock() {
+  const value = useContext(StockContext);
+  if (!value) throw new Error("useStock must be used inside StockProvider");
+  return value;
+}
+
 function MainLayout() {
   const { user, logout, isAdmin } = useAuth();
+  const { stockBooks, currentStockId, currentStock, selectStock } = useStock();
   const navigate = useNavigate();
   const [open, setOpen] = useState(true);
   const nav = [
+    ["/stocks", "Stocks", Database],
     ["/dashboard", "Dashboard", LayoutDashboard],
     ["/inventory", "Inventory", Package],
     ["/sales", "Sales", ShoppingCart],
@@ -143,10 +309,23 @@ function MainLayout() {
           <button className="rounded-md p-2 text-slate-500 hover:bg-slate-100" onClick={() => setOpen(!open)} aria-label="Toggle menu">
             {open ? <X size={20} /> : <Menu size={20} />}
           </button>
-          <div className="flex items-center gap-2 text-sm text-slate-600">
-            <span className="font-semibold text-slate-900">{user?.fullName}</span>
-            <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">{user?.role}</span>
-            <ChevronDown size={16} />
+          <div className="flex min-w-0 items-center gap-3">
+            <select
+              className="field max-w-[230px]"
+              value={currentStockId}
+              onChange={(event) => selectStock(event.target.value)}
+              aria-label="Select stock workspace"
+            >
+              {stockBooks.map((stock) => (
+                <option key={stock.id} value={stock.id}>{stock.name}</option>
+              ))}
+            </select>
+            <Link to="/stocks" className="btn-secondary whitespace-nowrap"><Plus size={16} /> New stock</Link>
+            <div className="hidden items-center gap-2 text-sm text-slate-600 md:flex">
+              <span className="max-w-[180px] truncate font-semibold text-slate-900">{currentStock.name}</span>
+              <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">{user?.role}</span>
+              <ChevronDown size={16} />
+            </div>
           </div>
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto p-5">
@@ -181,6 +360,73 @@ function StatCard({ label, value, tone = "blue" }) {
       <p className="text-sm text-slate-500">{label}</p>
       <p className={`mt-3 inline-flex rounded-md px-2 py-1 text-2xl font-bold ${tones[tone]}`}>{value}</p>
     </div>
+  );
+}
+
+function StocksPage() {
+  const { stockBooks, currentStockId, currentStock, selectStock, createStock, deleteStock } = useStock();
+  const [name, setName] = useState("");
+
+  const submit = (event) => {
+    event.preventDefault();
+    createStock(name);
+    setName("");
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="Stock Workspaces"
+        subtitle="Create separate stock books for another item group, shop, counter, or billing setup."
+      />
+      <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
+        <form onSubmit={submit} className="panel grid h-fit gap-3 p-4">
+          <h2 className="text-base font-bold">Create new stock</h2>
+          <input
+            className="field"
+            placeholder="Example: Mobile Accessories Stock"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            required
+          />
+          <button className="btn-primary"><Plus size={16} /> Create stock workspace</button>
+          <p className="text-xs leading-5 text-slate-500">
+            Main Stock uses the live Railway MySQL database. Extra workspaces are saved in this browser for separate inventory, sales, expenses, and invoices.
+          </p>
+        </form>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {stockBooks.map((stock) => (
+            <div key={stock.id} className="panel flex min-h-[150px] flex-col justify-between p-4">
+              <div>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h3 className="truncate text-base font-bold text-slate-950">{stock.name}</h3>
+                  {stock.id === currentStockId && <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">Selected</span>}
+                </div>
+                <p className="text-sm text-slate-500">
+                  {stock.backend ? "Connected to Railway MySQL backend." : "Separate browser-saved stock workspace."}
+                </p>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button className={stock.id === currentStockId ? "btn-primary" : "btn-secondary"} onClick={() => selectStock(stock.id)}>
+                  {stock.id === currentStockId ? "Current stock" : "Open stock"}
+                </button>
+                {!stock.backend && (
+                  <button className="rounded-md p-2 text-rose-600 hover:bg-rose-50" onClick={() => deleteStock(stock.id)} aria-label={`Delete ${stock.name}`}>
+                    <Trash2 size={17} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="panel mt-5 p-4">
+        <h2 className="text-base font-bold">Current workspace</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          You are working in <strong className="text-slate-800">{currentStock.name}</strong>. Dashboard, Inventory, Sales, Expenses, Billing, and Reports will use this selected stock.
+        </p>
+      </div>
+    </>
   );
 }
 
@@ -234,8 +480,13 @@ function LoginPage() {
 }
 
 function DashboardPage() {
+  const { currentStock, isBackendStock, localData } = useStock();
   const [data, setData] = useState(null);
   useEffect(() => {
+    if (!isBackendStock) {
+      setData(localDashboard(localData));
+      return;
+    }
     reportService.getDashboardSummary()
       .then((res) => setData(res.data))
       .catch(() => setData({
@@ -246,7 +497,7 @@ function DashboardPage() {
         lowStockProducts: [],
         recentSales: []
       }));
-  }, []);
+  }, [isBackendStock, localData]);
   const chart = [
     { name: "Revenue", value: Number(data?.month?.revenue || 0) },
     { name: "Expenses", value: Number(data?.month?.expenses || 0) },
@@ -255,6 +506,9 @@ function DashboardPage() {
   return (
     <>
       <PageHeader title="Dashboard" subtitle="Current stock, sales, and profitability snapshot." />
+      <div className="mb-5 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        Workspace: <strong>{currentStock.name}</strong>
+      </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Today Revenue" value={money(data?.today?.revenue)} />
         <StatCard label="Month Net Profit" value={money(data?.month?.netProfit)} tone="green" />
@@ -294,6 +548,7 @@ function DashboardPage() {
 }
 
 function InventoryPage() {
+  const { currentStock, isBackendStock, localData, updateLocalData } = useStock();
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [query, setQuery] = useState("");
@@ -301,10 +556,15 @@ function InventoryPage() {
   const [form, setForm] = useState({ name: "", sku: "", categoryId: "", buyingPrice: "", sellingPrice: "", stockQuantity: "", minimumStock: "", unit: "pcs" });
 
   const load = () => {
+    if (!isBackendStock) {
+      setProducts(localData.products || []);
+      setCategories(localData.categories || LOCAL_CATEGORIES);
+      return;
+    }
     productService.getAll().then((res) => setProducts(res.data)).catch(() => setProducts([]));
     categoryService.getAll().then((res) => setCategories(res.data)).catch(() => setCategories([]));
   };
-  useEffect(load, []);
+  useEffect(load, [isBackendStock, localData]);
 
   const resetForm = () => {
     setEditingProduct(null);
@@ -335,7 +595,22 @@ function InventoryPage() {
       stockQuantity: Number(form.stockQuantity || 0),
       minimumStock: Number(form.minimumStock || 0)
     };
-    if (editingProduct) {
+    if (!isBackendStock) {
+      const category = categories.find((item) => item.id === payload.categoryId) || null;
+      const savedProduct = {
+        ...payload,
+        id: editingProduct?.id || Date.now(),
+        category,
+        active: true
+      };
+      updateLocalData((data) => ({
+        ...data,
+        products: editingProduct
+          ? data.products.map((product) => (product.id === editingProduct.id ? savedProduct : product))
+          : [...data.products, savedProduct]
+      }));
+      toast.success(editingProduct ? "Product updated" : "Product added");
+    } else if (editingProduct) {
       await productService.update(editingProduct.id, payload);
       toast.success("Product updated");
     } else {
@@ -344,6 +619,33 @@ function InventoryPage() {
     }
     resetForm();
     load();
+  };
+
+  const deleteProduct = async (productId) => {
+    if (!isBackendStock) {
+      updateLocalData((data) => ({ ...data, products: data.products.filter((product) => product.id !== productId) }));
+      toast.success("Product deleted");
+      return;
+    }
+    await productService.delete(productId);
+    load();
+  };
+
+  const exportInventoryCsv = () => {
+    if (isBackendStock) return downloadExport(exportService.productsCsv, "inventory.csv");
+    const rows = [
+      ["SKU", "Product", "Category", "Stock", "Minimum Stock", "Cost Price", "Selling Price"],
+      ...products.map((product) => [
+        product.sku,
+        product.name,
+        product.category?.name || "-",
+        `${product.stockQuantity} ${product.unit || ""}`,
+        product.minimumStock,
+        product.buyingPrice,
+        product.sellingPrice
+      ])
+    ];
+    downloadText(`${currentStock.name}-inventory.csv`, csv(rows), "text/csv");
   };
 
   const filtered = products.filter((product) => [product.name, product.sku].join(" ").toLowerCase().includes(query.toLowerCase()));
@@ -355,11 +657,14 @@ function InventoryPage() {
         subtitle="Add products, monitor stock, and track pricing."
         action={
           <div className="flex flex-wrap gap-2">
-            <button className="btn-secondary" onClick={() => downloadExport(exportService.productsCsv, "inventory.csv")}>Excel</button>
-            <button className="btn-primary" onClick={() => downloadExport(exportService.productsPdf, "inventory.pdf")}>PDF</button>
+            <button className="btn-secondary" onClick={exportInventoryCsv}>Excel</button>
+            {isBackendStock && <button className="btn-primary" onClick={() => downloadExport(exportService.productsPdf, "inventory.pdf")}>PDF</button>}
           </div>
         }
       />
+      <div className="mb-5 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        Workspace: <strong>{currentStock.name}</strong>
+      </div>
       <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
         <form onSubmit={save} className="panel p-4">
           <h2 className="mb-4 text-base font-bold">{editingProduct ? "Update product" : "Add product"}</h2>
@@ -413,7 +718,7 @@ function InventoryPage() {
                       <button className="rounded-md p-2 text-blue-700 hover:bg-blue-50" onClick={() => startEdit(product)} aria-label={`Edit ${product.name}`}>
                         <Pencil size={16} />
                       </button>
-                      <button className="rounded-md p-2 text-rose-600 hover:bg-rose-50" onClick={() => productService.delete(product.id).then(load)} aria-label={`Delete ${product.name}`}>
+                      <button className="rounded-md p-2 text-rose-600 hover:bg-rose-50" onClick={() => deleteProduct(product.id)} aria-label={`Delete ${product.name}`}>
                         <Trash2 size={16} />
                       </button>
                       </div>
@@ -430,14 +735,64 @@ function InventoryPage() {
 }
 
 function SalesPage() {
+  const { currentStock, isBackendStock, localData, updateLocalData } = useStock();
   const [sales, setSales] = useState([]);
-  const load = () => saleService.getAll().then((res) => setSales(res.data)).catch(() => setSales([]));
-  useEffect(load, []);
+  const load = () => {
+    if (!isBackendStock) {
+      setSales(localData.sales || []);
+      return;
+    }
+    saleService.getAll().then((res) => setSales(res.data)).catch(() => setSales([]));
+  };
+  useEffect(load, [isBackendStock, localData]);
 
   const savePayment = async (sale, amountPaid) => {
+    if (!isBackendStock) {
+      const paid = Number(amountPaid || 0);
+      updateLocalData((data) => ({
+        ...data,
+        sales: data.sales.map((item) => item.id === sale.id ? {
+          ...item,
+          amountPaid: paid,
+          balanceDue: Math.max(0, Number(item.totalAmount || 0) - paid),
+          paymentStatus: paid >= Number(item.totalAmount || 0) ? "PAID" : paid > 0 ? "PARTIAL" : "PENDING"
+        } : item)
+      }));
+      toast.success("Payment updated");
+      return;
+    }
     await saleService.updatePayment(sale.id, { amountPaid: String(Number(amountPaid || 0)), paymentMethod: "CASH" });
     toast.success("Payment updated");
     load();
+  };
+
+  const exportSalesCsv = () => {
+    if (isBackendStock) return downloadExport(exportService.salesCsv, "sales.csv");
+    const rows = [
+      ["Invoice", "Customer", "Items", "Total", "Paid", "Balance", "Status", "Date"],
+      ...sales.map((sale) => [
+        sale.invoiceNumber,
+        sale.customerName,
+        (sale.saleItems || []).map((item) => `${item.product?.name || "Item"} x ${item.quantity}`).join("; "),
+        sale.totalAmount,
+        sale.amountPaid,
+        sale.balanceDue,
+        sale.paymentStatus,
+        String(sale.createdAt || "").slice(0, 10)
+      ])
+    ];
+    downloadText(`${currentStock.name}-sales.csv`, csv(rows), "text/csv");
+  };
+
+  const downloadLocalInvoice = (sale) => {
+    const rows = (sale.saleItems || []).map((item) => `
+      <tr><td>${item.product?.name || "Item"}</td><td>${item.quantity}</td><td>${money(item.unitPrice)}</td><td>${money(item.totalPrice)}</td></tr>
+    `).join("");
+    downloadText(`${sale.invoiceNumber}.html`, `<!doctype html>
+      <html><head><title>${sale.invoiceNumber}</title><style>body{font-family:Arial,sans-serif;margin:32px;color:#172033}table{width:100%;border-collapse:collapse;margin-top:20px}th,td{border-bottom:1px solid #ddd;padding:10px;text-align:left}.total{margin-top:20px;max-width:320px;margin-left:auto}.total div{display:flex;justify-content:space-between;padding:5px 0}</style></head>
+      <body><h1>StockWise 360</h1><p><strong>${currentStock.name}</strong> Invoice ${sale.invoiceNumber}</p><p><strong>Customer:</strong> ${sale.customerName}</p>
+      <table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="total"><div><span>Total</span><strong>${money(sale.totalAmount)}</strong></div><div><span>Paid</span><strong>${money(sale.amountPaid)}</strong></div><div><span>Balance</span><strong>${money(sale.balanceDue)}</strong></div><div><span>Status</span><strong>${sale.paymentStatus}</strong></div></div></body></html>`, "text/html");
   };
 
   return (
@@ -447,12 +802,15 @@ function SalesPage() {
         subtitle="Invoices and payment status."
         action={
           <div className="flex flex-wrap gap-2">
-            <button className="btn-secondary" onClick={() => downloadExport(exportService.salesCsv, "sales.csv")}>Excel</button>
-            <button className="btn-secondary" onClick={() => downloadExport(exportService.salesPdf, "sales.pdf")}>PDF</button>
+            <button className="btn-secondary" onClick={exportSalesCsv}>Excel</button>
+            {isBackendStock && <button className="btn-secondary" onClick={() => downloadExport(exportService.salesPdf, "sales.pdf")}>PDF</button>}
             <Link className="btn-primary" to="/sales/new"><Plus size={16} /> New sale</Link>
           </div>
         }
       />
+      <div className="mb-5 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        Workspace: <strong>{currentStock.name}</strong>
+      </div>
       <div className="panel overflow-x-auto">
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500">
@@ -485,7 +843,9 @@ function SalesPage() {
                 <td className="px-4 py-3"><span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">{sale.paymentStatus}</span></td>
                 <td className="px-4 py-3">{sale.createdAt?.slice(0, 10)}</td>
                 <td className="px-4 py-3">
-                  <button className="btn-secondary px-3 py-1" onClick={() => downloadExport(() => exportService.invoicePdf(sale.id), `${sale.invoiceNumber}.pdf`)}>Invoice PDF</button>
+                  <button className="btn-secondary px-3 py-1" onClick={() => isBackendStock ? downloadExport(() => exportService.invoicePdf(sale.id), `${sale.invoiceNumber}.pdf`) : downloadLocalInvoice(sale)}>
+                    {isBackendStock ? "Invoice PDF" : "Invoice HTML"}
+                  </button>
                 </td>
               </tr>
             ))}
@@ -498,12 +858,19 @@ function SalesPage() {
 
 function NewSalePage() {
   const navigate = useNavigate();
+  const { currentStock, isBackendStock, localData, updateLocalData } = useStock();
   const [products, setProducts] = useState([]);
   const [customerName, setCustomerName] = useState("Walk-in Customer");
   const [amountPaid, setAmountPaid] = useState("");
   const [paymentStatus, setPaymentStatus] = useState("PENDING");
   const [items, setItems] = useState([]);
-  useEffect(() => { productService.getAll().then((res) => setProducts(res.data)).catch(() => setProducts([])); }, []);
+  useEffect(() => {
+    if (!isBackendStock) {
+      setProducts(localData.products || []);
+      return;
+    }
+    productService.getAll().then((res) => setProducts(res.data)).catch(() => setProducts([]));
+  }, [isBackendStock, localData]);
 
   const addItem = (productId) => {
     const product = products.find((item) => item.id === Number(productId));
@@ -518,7 +885,53 @@ function NewSalePage() {
       toast.error("Enter amount paid for a partial invoice");
       return;
     }
-    await saleService.create({ customerName, amountPaid: paid, paymentMethod: "CASH", items });
+    if (!isBackendStock) {
+      const insufficientItem = items.find((item) => {
+        const product = localData.products.find((row) => row.id === item.productId);
+        return !product || Number(product.stockQuantity || 0) < Number(item.quantity || 0);
+      });
+      if (insufficientItem) {
+        toast.error(`Insufficient stock for ${insufficientItem.name}`);
+        return;
+      }
+      const saleItems = items.map((item, index) => {
+        const product = localData.products.find((row) => row.id === item.productId);
+        return {
+          id: Date.now() + index,
+          product: { id: product.id, name: product.name, sku: product.sku },
+          quantity: Number(item.quantity || 0),
+          unitPrice: Number(item.unitPrice || 0),
+          costPrice: Number(product.buyingPrice || 0),
+          totalPrice: Number(item.unitPrice || 0) * Number(item.quantity || 0)
+        };
+      });
+      updateLocalData((data) => {
+        const invoiceNumber = `INV-${String(data.saleCounter || 1).padStart(4, "0")}`;
+        const sale = {
+          id: Date.now(),
+          invoiceNumber,
+          customerName,
+          saleItems,
+          totalAmount: subtotal,
+          amountPaid: paid,
+          balanceDue: balance,
+          paymentStatus: paid >= subtotal ? "PAID" : paid > 0 ? "PARTIAL" : "PENDING",
+          paymentMethod: "CASH",
+          createdAt: new Date().toISOString()
+        };
+        return {
+          ...data,
+          saleCounter: Number(data.saleCounter || 1) + 1,
+          products: data.products.map((product) => {
+            const item = items.find((row) => row.productId === product.id);
+            return item ? { ...product, stockQuantity: Number(product.stockQuantity || 0) - Number(item.quantity || 0) } : product;
+          }),
+          sales: [sale, ...data.sales]
+        };
+      });
+    } else {
+      await saleService.create({ customerName, amountPaid: paid, paymentMethod: "CASH", items });
+    }
     toast.success("Invoice created");
     navigate("/sales");
   };
@@ -526,6 +939,9 @@ function NewSalePage() {
   return (
     <>
       <PageHeader title="New Sale" subtitle="Build an invoice and deduct stock automatically." />
+      <div className="mb-5 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        Workspace: <strong>{currentStock.name}</strong>
+      </div>
       <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
         <div className="panel p-4">
           <div className="mb-4 grid gap-3 md:grid-cols-2">
@@ -582,13 +998,27 @@ function NewSalePage() {
 }
 
 function ExpensesPage() {
+  const { currentStock, isBackendStock, localData, updateLocalData } = useStock();
   const [expenses, setExpenses] = useState([]);
   const [form, setForm] = useState({ title: "", amount: "", category: "OTHER", expenseDate: today(), description: "" });
-  const load = () => expenseService.getAll().then((res) => setExpenses(res.data)).catch(() => setExpenses([]));
-  useEffect(load, []);
+  const load = () => {
+    if (!isBackendStock) {
+      setExpenses(localData.expenses || []);
+      return;
+    }
+    expenseService.getAll().then((res) => setExpenses(res.data)).catch(() => setExpenses([]));
+  };
+  useEffect(load, [isBackendStock, localData]);
   const save = async (event) => {
     event.preventDefault();
-    await expenseService.create({ ...form, amount: Number(form.amount || 0) });
+    if (!isBackendStock) {
+      updateLocalData((data) => ({
+        ...data,
+        expenses: [{ ...form, id: Date.now(), amount: Number(form.amount || 0) }, ...data.expenses]
+      }));
+    } else {
+      await expenseService.create({ ...form, amount: Number(form.amount || 0) });
+    }
     toast.success("Expense added");
     setForm({ title: "", amount: "", category: "OTHER", expenseDate: today(), description: "" });
     load();
@@ -596,6 +1026,9 @@ function ExpensesPage() {
   return (
     <>
       <PageHeader title="Expenses" subtitle="Track operating costs for profit and loss." />
+      <div className="mb-5 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        Workspace: <strong>{currentStock.name}</strong>
+      </div>
       <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
         <form onSubmit={save} className="panel grid gap-3 p-4">
           <input className="field" placeholder="Title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required />
@@ -621,10 +1054,30 @@ function ExpensesPage() {
 }
 
 function ReportsPage() {
+  const { currentStock, isBackendStock, localData } = useStock();
   const [range, setRange] = useState({ start: today().slice(0, 8) + "01", end: today() });
   const [summary, setSummary] = useState(null);
-  const load = () => reportService.getProfitLoss(range.start, range.end).then((res) => setSummary(res.data)).catch(() => setSummary(null));
-  useEffect(load, []);
+  const load = () => {
+    if (!isBackendStock) {
+      setSummary(localProfitLoss(localData, range.start, range.end));
+      return;
+    }
+    reportService.getProfitLoss(range.start, range.end).then((res) => setSummary(res.data)).catch(() => setSummary(null));
+  };
+  useEffect(load, [isBackendStock, localData]);
+  const exportReportCsv = () => {
+    if (isBackendStock) return downloadExport(() => exportService.profitLossCsv(range.start, range.end), "profit-loss.csv");
+    const report = localProfitLoss(localData, range.start, range.end);
+    downloadText(`${currentStock.name}-profit-loss.csv`, csv([
+      ["Metric", "Value"],
+      ["Revenue", report.revenue],
+      ["COGS", report.cogs],
+      ["Expenses", report.expenses],
+      ["Gross Profit", report.grossProfit],
+      ["Net Profit", report.netProfit],
+      ["Sales Count", report.salesCount]
+    ]), "text/csv");
+  };
   const chart = [
     { name: "Revenue", value: Number(summary?.revenue || 0) },
     { name: "COGS", value: Number(summary?.cogs || 0) },
@@ -638,11 +1091,14 @@ function ReportsPage() {
         subtitle="Profit and loss by date range."
         action={
           <div className="flex flex-wrap gap-2">
-            <button className="btn-secondary" onClick={() => downloadExport(() => exportService.profitLossCsv(range.start, range.end), "profit-loss.csv")}>Excel</button>
-            <button className="btn-primary" onClick={() => downloadExport(() => exportService.profitLossPdf(range.start, range.end), "profit-loss.pdf")}>PDF</button>
+            <button className="btn-secondary" onClick={exportReportCsv}>Excel</button>
+            {isBackendStock && <button className="btn-primary" onClick={() => downloadExport(() => exportService.profitLossPdf(range.start, range.end), "profit-loss.pdf")}>PDF</button>}
           </div>
         }
       />
+      <div className="mb-5 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        Workspace: <strong>{currentStock.name}</strong>
+      </div>
       <div className="panel mb-5 flex flex-wrap gap-3 p-4">
         <input className="field max-w-[180px]" type="date" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} />
         <input className="field max-w-[180px]" type="date" value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} />
@@ -681,8 +1137,9 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/" element={<PrivateRoute><MainLayout /></PrivateRoute>}>
-        <Route index element={<Navigate to="/dashboard" replace />} />
+      <Route path="/" element={<PrivateRoute><StockProvider><MainLayout /></StockProvider></PrivateRoute>}>
+        <Route index element={<Navigate to="/stocks" replace />} />
+        <Route path="stocks" element={<StocksPage />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="inventory" element={<InventoryPage />} />
         <Route path="sales" element={<SalesPage />} />
