@@ -30,13 +30,11 @@ This project includes `.github/workflows/deploy-frontend.yml`.
 4. Go to **Pages**.
 5. Set **Source** to **GitHub Actions**.
 6. Go to **Settings > Secrets and variables > Actions > Variables**.
-7. Add this repository variable:
+The included workflow currently builds the frontend with this Railway backend:
 
 ```text
-VITE_API_URL=https://your-backend-domain.com/api
+VITE_API_URL=https://stockwise-360-backend-production.up.railway.app/api
 ```
-
-If you do not have a hosted backend yet, GitHub Pages will load the frontend, but login and MySQL-backed data will not work.
 
 ## Backend Environment Variables
 

@@ -39,7 +39,7 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_API_URL: https://stockwise-360-backend-production.up.railway.app/api
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
