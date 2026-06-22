@@ -1,12 +1,33 @@
-# StockWise 360 Inventory System
+# StockWise 360
 
-StockWise 360 is a full-stack inventory and business management app built from the setup guide in this folder.
+StockWise 360 is a full-stack inventory, billing, sales, expenses, and reporting system for small businesses. It helps teams manage stock, create customer invoices, track paid, pending, and partial payments, export reports, and monitor business performance from a responsive dashboard.
+
+## Live Project
+
+- Live app: [https://almaazkhan07.github.io/stockwise-360/](https://almaazkhan07.github.io/stockwise-360/)
+- Backend health check: [https://stockwise-360-backend-production.up.railway.app/api/health](https://stockwise-360-backend-production.up.railway.app/api/health)
+- Default login: `admin` / `Admin@123`
+
+## Features
+
+- Responsive dashboard for desktop, tablet, and mobile screens
+- Inventory management with add, edit, update, and stock tracking
+- Multi-stock support for managing separate business stock sections
+- Sales and billing workflow with item-based bill calculation
+- Editable invoices with customer purchase details
+- Payment status support: paid, pending, and partial
+- Expenses tracking for business cost monitoring
+- Reports with revenue, COGS, profit, and summary analytics
+- PDF, Excel, and invoice generation
+- JWT-based authentication with protected API routes
+- MySQL database integration for persistent data
 
 ## Stack
 
 - Backend: Spring Boot 3, Java 17, Spring Security, JWT, Spring Data JPA
 - Frontend: React 18, Vite, Tailwind CSS, Recharts
 - Database: MySQL 8
+- Hosting: GitHub Pages frontend, Railway backend, Railway MySQL
 
 ## Project Layout
 
@@ -67,14 +88,12 @@ Frontend: `http://localhost:3000`
 - Username: `admin`
 - Password: `Admin@123`
 
-## Hosting
+## Deployment
 
-The project is GitHub-ready. GitHub Pages can host the React frontend, but it cannot run the Spring Boot backend or MySQL database.
+The project is deployed with GitHub Pages for the React frontend and Railway for the Spring Boot backend and MySQL database.
 
-Use:
-
-- GitHub Pages for `frontend/`
-- Render, Railway, Fly.io, VPS, or similar for `backend/`
-- Hosted MySQL for production data
+- Frontend: [GitHub Pages](https://almaazkhan07.github.io/stockwise-360/)
+- Backend: [Railway](https://stockwise-360-backend-production.up.railway.app/api/health)
+- Database: Railway MySQL
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the exact GitHub Pages workflow and backend environment variables.

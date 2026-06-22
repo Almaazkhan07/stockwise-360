@@ -14,11 +14,17 @@ GitHub Pages cannot run:
 
 For a fully live app, deploy the backend and database separately, then point the GitHub Pages frontend to that backend URL.
 
-## Recommended Live Setup
+## Current Live Setup
 
-- Frontend: GitHub Pages.
-- Backend: Render, Railway, Fly.io, VPS, or another Java hosting service.
-- Database: Railway MySQL, PlanetScale, Aiven, AWS RDS, or another hosted MySQL database.
+- Frontend: [GitHub Pages](https://almaazkhan07.github.io/stockwise-360/)
+- Backend: [Railway](https://stockwise-360-backend-production.up.railway.app/api/health)
+- Database: Railway MySQL
+
+The GitHub Pages frontend is configured to call the Railway backend API:
+
+```text
+https://stockwise-360-backend-production.up.railway.app/api
+```
 
 ## GitHub Pages Frontend
 
@@ -30,7 +36,7 @@ This project includes `.github/workflows/deploy-frontend.yml`.
 4. Go to **Pages**.
 5. Set **Source** to **GitHub Actions**.
 6. Go to **Settings > Secrets and variables > Actions > Variables**.
-The included workflow currently builds the frontend with this Railway backend:
+The included workflow builds the frontend with this Railway backend:
 
 ```text
 VITE_API_URL=https://stockwise-360-backend-production.up.railway.app/api
